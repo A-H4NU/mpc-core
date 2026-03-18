@@ -2,8 +2,11 @@
 name = "mpc-core"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/A-H4NU/mpc-core"
 description = "A flexible, trait-based core framework and asynchronous execution engine for Multi-Party Computation (MPC) protocols."
 license = "MIT OR Apache-2.0"
+keywords = ["mpc", "cryptography", "secure-computation", "async"]
+categories = ["cryptography", "network-programming", "asynchronous"]
 
 [dependencies]
 serde = { version = "1.0.228", features = ["serde_derive"] }
