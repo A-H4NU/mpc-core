@@ -3,7 +3,7 @@ name = "mpc-core"
 version = "0.1.0"
 edition = "2024"
 description = "A flexible, trait-based core framework and asynchronous execution engine for Multi-Party Computation (MPC) protocols."
-license = "MIT"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 serde = { version = "1.0.228", features = ["serde_derive"] }
