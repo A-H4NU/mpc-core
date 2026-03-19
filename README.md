@@ -1,6 +1,12 @@
 # mpc-core
 
-> A flexible, trait-based core framework and asynchronous execution engine for Multi-Party Computation (MPC) protocols.
+[<img alt="github" src="https://img.shields.io/badge/github-a_h4nu/mpc_core-8da0cb?style=for-the-badge&labelColor=555555&logo=github" height="20">](https://github.com/A-H4NU/mpc-core)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/mpc_core.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/mpc-core)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-mpc_core-66c2a5?style=for-the-badge&labelColor=555555&logo=docs.rs" height="20">](https://docs.rs/mpc-core)
+[<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/A-H4NU/mpc-core/rust.yml?branch=main&style=for-the-badge" height="20">](https://github.com/A-H4NU/mpc-core/actions?query=branch%3Amain)
+
+> A flexible, trait-based core framework and asynchronous execution engine for
+> Multi-Party Computation (MPC) protocols.
 
 `mpc-core` provides the foundational building blocks required to design,
 compile, and execute secure multi-party computation protocols. By strictly
