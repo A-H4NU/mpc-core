@@ -106,80 +106,59 @@ impl<S: MpcScheme> MpcCircuit<S> {
             .collect();
         let mut online_wave = VecDeque::new();
 
-        while !offline_wave.is_empty() {
-            let mut next_offline_wave = VecDeque::new();
-            let mut local_operations = Vec::new();
-            let mut network_operations = Vec::new();
+        let mut process_wave =
+            |wave: &mut VecDeque<usize>,
+             rounds: &mut Vec<Round<S>>,
+             mut target_online_wave: Option<&mut VecDeque<usize>>| {
+                while !wave.is_empty() {
+                    let mut next_wave = VecDeque::new();
+                    let mut local_operations = Vec::new();
+                    let mut network_operations = Vec::new();
 
-            while let Some(op_idx) = offline_wave.pop_front() {
-                if ops[op_idx].as_ref().unwrap().is_input() {
-                    online_wave.push_back(op_idx);
-                    continue;
-                }
+                    while let Some(op_idx) = wave.pop_front() {
+                        if let Some(ref mut online_w) = target_online_wave
+                            && ops[op_idx].as_ref().unwrap().is_input()
+                        {
+                            online_w.push_back(op_idx);
+                            continue;
+                        }
 
-                let op = ops[op_idx].take().unwrap();
-                let op_local = scheme.is_operation_local(&op);
+                        let op = ops[op_idx].take().unwrap();
+                        let op_local = scheme.is_operation_local(&op);
 
-                if op_local {
-                    local_operations.push(op);
-                } else {
-                    network_operations.push(op);
-                }
-
-                for &consumer_idx in &adj[op_idx] {
-                    in_degree[consumer_idx] -= 1;
-                    if in_degree[consumer_idx] == 0 {
                         if op_local {
-                            offline_wave.push_back(consumer_idx);
+                            local_operations.push(op);
                         } else {
-                            next_offline_wave.push_back(consumer_idx);
+                            network_operations.push(op);
+                        }
+
+                        for &consumer_idx in &adj[op_idx] {
+                            in_degree[consumer_idx] -= 1;
+                            if in_degree[consumer_idx] == 0 {
+                                if op_local {
+                                    wave.push_back(consumer_idx);
+                                } else {
+                                    next_wave.push_back(consumer_idx);
+                                }
+                            }
                         }
                     }
+
+                    rounds.push(Round {
+                        local_operations,
+                        network_operations,
+                    });
+
+                    std::mem::swap(wave, &mut next_wave);
                 }
-            }
+            };
 
-            offline_rounds.push(Round {
-                local_operations,
-                network_operations,
-            });
-
-            std::mem::swap(&mut offline_wave, &mut next_offline_wave);
-        }
-
-        while !online_wave.is_empty() {
-            let mut next_online_wave = VecDeque::new();
-            let mut local_operations = Vec::new();
-            let mut network_operations = Vec::new();
-
-            while let Some(op_idx) = online_wave.pop_front() {
-                let op = ops[op_idx].take().unwrap();
-                let op_local = scheme.is_operation_local(&op);
-
-                if op_local {
-                    local_operations.push(op);
-                } else {
-                    network_operations.push(op);
-                }
-
-                for &consumer_idx in &adj[op_idx] {
-                    in_degree[consumer_idx] -= 1;
-                    if in_degree[consumer_idx] == 0 {
-                        if op_local {
-                            online_wave.push_back(consumer_idx);
-                        } else {
-                            next_online_wave.push_back(consumer_idx);
-                        }
-                    }
-                }
-            }
-
-            online_rounds.push(Round {
-                local_operations,
-                network_operations,
-            });
-
-            std::mem::swap(&mut online_wave, &mut next_online_wave);
-        }
+        process_wave(
+            &mut offline_wave,
+            &mut offline_rounds,
+            Some(&mut online_wave),
+        );
+        process_wave(&mut online_wave, &mut online_rounds, None);
 
         if ops.iter().any(Option::is_some) {
             return Err(MpcCircuitError::CircuitCyclic);
