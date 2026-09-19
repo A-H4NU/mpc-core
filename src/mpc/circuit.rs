@@ -217,3 +217,157 @@ impl<S: MpcScheme> MpcCircuit<S> {
         self.online_rounds.len()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mpc::{FinalizePhaseOutput, NetworkPhaseOutput};
+    use crate::networking::Network;
+    use std::convert::Infallible;
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    enum MockOp {
+        Input(usize, WireId),
+        Local(Vec<WireId>, WireId),
+        Network(Vec<WireId>, WireId),
+    }
+
+    impl Operation for MockOp {
+        fn get_input_party_id(&self) -> Option<usize> {
+            match self {
+                MockOp::Input(party, _) => Some(*party),
+                _ => None,
+            }
+        }
+        fn inputs<'a>(&'a self) -> Box<dyn Iterator<Item = WireId> + 'a> {
+            match self {
+                MockOp::Input(_, _) => Box::new(std::iter::empty()),
+                MockOp::Local(ins, _) | MockOp::Network(ins, _) => {
+                    Box::new(ins.clone().into_iter())
+                }
+            }
+        }
+        fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = WireId> + 'a> {
+            match self {
+                MockOp::Input(_, out) | MockOp::Local(_, out) | MockOp::Network(_, out) => {
+                    Box::new(std::iter::once(*out))
+                }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct MockScheme;
+
+    impl MpcScheme for MockScheme {
+        type Context = ();
+        type NetworkElement = ();
+        type Wire = ();
+        type Input = ();
+        type Operation = MockOp;
+        type Pending<'a> = ();
+        type EstablishContextError = Infallible;
+        type NetworkPhaseError = Infallible;
+        type FinalizePhaseError = Infallible;
+
+        fn is_circuit_sound<'a, I>(&self, _circuit: I) -> bool
+        where
+            Self::Operation: 'a,
+            I: IntoIterator<Item = &'a Self::Operation>,
+        {
+            true
+        }
+
+        fn is_operation_local(&self, op: &Self::Operation) -> bool {
+            matches!(op, MockOp::Local(_, _))
+        }
+
+        fn establish_context<N: Network>(
+            &self,
+            _network: &mut N,
+            _circuit: &MpcCircuit<Self>,
+        ) -> Result<Self::Context, Self::EstablishContextError> {
+            Ok(())
+        }
+
+        fn prepare_user_input<I>(&self, _context: &mut Self::Context, _inputs: I)
+        where
+            I: IntoIterator<Item = (WireId, Self::Input)>,
+        {
+        }
+
+        fn do_network_phase<'a, I>(
+            &self,
+            _context: &mut Self::Context,
+            _op: &Self::Operation,
+            _inputs: I,
+        ) -> Result<NetworkPhaseOutput<'a, Self>, Self::NetworkPhaseError>
+        where
+            Self::Wire: 'a,
+            I: IntoIterator<Item = &'a Self::Wire>,
+        {
+            Ok(NetworkPhaseOutput {
+                pending: (),
+                send_request: vec![],
+                receive_request: vec![],
+            })
+        }
+
+        fn do_finalize_phase<'a, I>(
+            &self,
+            _context: &mut Self::Context,
+            _pending: Self::Pending<'a>,
+            _network_data: I,
+        ) -> Result<FinalizePhaseOutput<Self>, Self::FinalizePhaseError>
+        where
+            I: IntoIterator<Item = Self::NetworkElement>,
+        {
+            Ok(FinalizePhaseOutput(vec![()]))
+        }
+    }
+
+    #[test]
+    fn test_offline_and_online_rounds() {
+        let ops = vec![
+            MockOp::Local(vec![], WireId(0)),
+            MockOp::Local(vec![], WireId(1)),
+            MockOp::Network(vec![WireId(0), WireId(1)], WireId(2)),
+            MockOp::Input(0, WireId(3)),
+            MockOp::Local(vec![WireId(3)], WireId(4)),
+            MockOp::Network(vec![WireId(2), WireId(4)], WireId(5)),
+        ];
+
+        let circuit = MpcCircuit::new(ops, MockScheme).unwrap();
+
+        let offline = circuit.offline_rounds();
+        assert_eq!(offline.len(), 1);
+
+        assert_eq!(offline[0].local_operations().len(), 2);
+        assert_eq!(offline[0].network_operations().len(), 1);
+        assert_eq!(
+            offline[0].network_operations()[0],
+            MockOp::Network(vec![WireId(0), WireId(1)], WireId(2))
+        );
+
+        let online = circuit.online_rounds();
+        assert_eq!(online.len(), 2);
+
+        assert_eq!(online[0].local_operations().len(), 0);
+        assert_eq!(online[0].network_operations().len(), 1);
+        assert_eq!(
+            online[0].network_operations()[0],
+            MockOp::Input(0, WireId(3))
+        );
+
+        assert_eq!(online[1].local_operations().len(), 1);
+        assert_eq!(
+            online[1].local_operations()[0],
+            MockOp::Local(vec![WireId(3)], WireId(4))
+        );
+        assert_eq!(online[1].network_operations().len(), 1);
+        assert_eq!(
+            online[1].network_operations()[0],
+            MockOp::Network(vec![WireId(2), WireId(4)], WireId(5))
+        );
+    }
+}
