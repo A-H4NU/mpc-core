@@ -25,36 +25,32 @@ where
     }
 }
 
+use std::borrow::Cow;
+
 #[derive(Debug)]
 pub struct SendRequest<'a, T>
 where
-    T: Serialize,
+    T: Serialize + Clone,
 {
     pub to: usize,
-    pub data: OwnedOrRef<'a, T>,
-}
-
-#[derive(Debug)]
-pub enum OwnedOrRef<'a, T> {
-    Owned(T),
-    Ref(&'a T),
+    pub data: Cow<'a, T>,
 }
 
 impl<'a, T> SendRequest<'a, T>
 where
-    T: Serialize,
+    T: Serialize + Clone,
 {
     pub fn new(to: usize, data: T) -> Self {
         Self {
             to,
-            data: OwnedOrRef::Owned(data),
+            data: Cow::Owned(data),
         }
     }
 
     pub fn from_ref(to: usize, data: &'a T) -> Self {
         Self {
             to,
-            data: OwnedOrRef::Ref(data),
+            data: Cow::Borrowed(data),
         }
     }
 }
@@ -180,6 +176,6 @@ pub trait Network {
         request: I,
     ) -> impl Future<Output = io::Result<SendLen>>
     where
-        T: Serialize + 'a,
+        T: Serialize + Clone + 'a,
         I: IntoIterator<Item = &'a SendRequest<'a, T>>;
 }

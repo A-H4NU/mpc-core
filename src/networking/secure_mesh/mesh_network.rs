@@ -2,11 +2,7 @@ use ed25519_dalek::SigningKey;
 use futures::{TryFutureExt as _, future};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use std::{
-    future::Future,
-    io,
-    sync::{Arc, Mutex},
-};
+use std::{future::Future, io, sync::Arc};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpStream,
@@ -14,7 +10,7 @@ use tokio::{
 
 use super::identity::NodeIdentities;
 use super::secure_stream::{ConnectionRole, SecureStream};
-use crate::networking::{Network, OwnedOrRef, ReceiveRequest, RecvLen, SendLen, SendRequest};
+use crate::networking::{Network, ReceiveRequest, RecvLen, SendLen, SendRequest};
 
 pub struct MeshNetwork {
     my_id: usize,
@@ -93,10 +89,6 @@ impl Network for MeshNetwork {
 
         let mut tasks = Vec::with_capacity(total_requests_len);
 
-        let results = Arc::new(Mutex::new(
-            (0..total_requests_len).map(|_| None).collect::<Vec<_>>(),
-        ));
-
         let mut channel_extract_result = Ok(());
         for (from, counts) in request_per_from {
             let channel = self.channels.get_mut(from).and_then(Option::take);
@@ -110,20 +102,15 @@ impl Network for MeshNetwork {
             }
             let mut channel: SecureStream<TcpStream> = channel.unwrap();
 
-            let results = results.clone();
-
             let task = async move {
                 let mut total_received_len = 0;
+                let mut objects_list = Vec::with_capacity(counts.len());
                 for (index, count) in counts {
                     let (objects, received_len) = channel.recv_objects::<T>(count).await?;
-
-                    let mut guard = results.lock().ok().unwrap();
-                    let prev = guard[index].replace(objects);
-                    assert!(prev.is_none());
-
+                    objects_list.push((index, objects));
                     total_received_len += received_len;
                 }
-                Ok::<_, io::Error>((total_received_len, from, channel))
+                Ok::<_, io::Error>((total_received_len, from, channel, objects_list))
             };
 
             tasks.push(task);
@@ -133,12 +120,16 @@ impl Network for MeshNetwork {
             channel_extract_result?;
             let mut received_len = 0;
             let async_results = future::try_join_all(tasks).await?;
-            for (len, from, channel) in async_results {
+            let mut results = (0..total_requests_len).map(|_| None).collect::<Vec<_>>();
+            for (len, from, channel, objects_list) in async_results {
                 assert!(self.channels[from].is_none());
                 self.channels[from] = Some(channel);
                 received_len += len;
+                for (index, objects) in objects_list {
+                    let prev = results[index].replace(objects);
+                    assert!(prev.is_none());
+                }
             }
-            let results = Arc::try_unwrap(results).ok().unwrap().into_inner().unwrap();
 
             assert!(results.iter().all(|x| x.is_some()));
 
@@ -152,7 +143,7 @@ impl Network for MeshNetwork {
         request: I,
     ) -> impl Future<Output = io::Result<SendLen>>
     where
-        T: Serialize + 'a,
+        T: Serialize + Clone + 'a,
         I: IntoIterator<Item = &'a SendRequest<'a, T>>,
     {
         let mut total_request_len = 0;
@@ -165,8 +156,8 @@ impl Network for MeshNetwork {
             .into_group_map();
         let mut tasks = Vec::with_capacity(total_request_len);
 
-        struct RefList<'b, 'a, T>(&'b [&'b OwnedOrRef<'a, T>]);
-        impl<'b, 'a, T: Serialize> Serialize for RefList<'b, 'a, T> {
+        struct RefList<'b, 'a, T: Clone>(&'b [&'b std::borrow::Cow<'a, T>]);
+        impl<'b, 'a, T: Serialize + Clone> Serialize for RefList<'b, 'a, T> {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
                 S: serde::Serializer,
@@ -175,8 +166,8 @@ impl Network for MeshNetwork {
                 let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
                 for item in self.0 {
                     match *item {
-                        OwnedOrRef::Owned(t) => seq.serialize_element(t)?,
-                        OwnedOrRef::Ref(t) => seq.serialize_element(*t)?,
+                        std::borrow::Cow::Owned(t) => seq.serialize_element(t)?,
+                        std::borrow::Cow::Borrowed(t) => seq.serialize_element(*t)?,
                     }
                 }
                 seq.end()

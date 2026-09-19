@@ -372,50 +372,14 @@ where
     where
         P: FnMut(&S::Wire) -> bool,
     {
-        use std::{cmp, fmt};
-        #[allow(unused)]
-        struct Dummy1<'a, S: MpcScheme> {
-            id: WireId,
-            wire: &'a S::Wire,
-        }
-
-        impl<'a, S: MpcScheme> PartialEq for Dummy1<'a, S> {
-            fn eq(&self, other: &Self) -> bool {
-                self.id == other.id
-            }
-        }
-
-        impl<'a, S: MpcScheme> Eq for Dummy1<'a, S> {}
-
-        impl<'a, S: MpcScheme> cmp::PartialOrd for Dummy1<'a, S> {
-            fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-                Some(self.cmp(other))
-            }
-        }
-
-        impl<'a, S: MpcScheme> cmp::Ord for Dummy1<'a, S> {
-            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                self.id.0.cmp(&other.id.0)
-            }
-        }
-
-        struct Dummy2<'a, S: MpcScheme>(Vec<Dummy1<'a, S>>);
-
-        impl<'a, S: MpcScheme> fmt::Debug for Dummy2<'a, S> {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_map()
-                    .entries(self.0.iter().map(|d| (d.id.0, d.wire)))
-                    .finish()
-            }
-        }
-
         let to_print = self
             .wire_contents
             .iter()
-            .filter_map(move |(&id, wire)| predicate(wire).then_some(Dummy1::<S> { id, wire }))
-            .sorted_unstable()
+            .filter(|&(_, wire)| predicate(wire))
+            .sorted_by_key(|(id, _)| id.0)
+            .map(|(id, wire)| (id.0, wire))
             .collect_vec();
 
-        println!("{:#?}", Dummy2(to_print));
+        println!("{:#?}", to_print);
     }
 }

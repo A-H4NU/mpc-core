@@ -53,7 +53,7 @@ where
     type Context: Debug;
 
     /// The type that represents the element that travels across the network.
-    type NetworkElement: Debug + Serialize + for<'de> Deserialize<'de>;
+    type NetworkElement: Debug + Serialize + for<'de> Deserialize<'de> + Clone;
 
     /// The type that represents the wire value.
     type Wire: Debug;
