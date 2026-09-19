@@ -1,45 +1,7 @@
-use std::{
-    net::SocketAddr,
-    ops::{Index, IndexMut},
-};
+use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 use ed25519_dalek::VerifyingKey;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NodeIdentities {
-    identities: Vec<NodeIdentity>,
-}
-
-impl NodeIdentities {
-    pub fn new(identities: Vec<NodeIdentity>) -> Self {
-        NodeIdentities { identities }
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.identities.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.identities.is_empty()
-    }
-}
-
-impl Index<usize> for NodeIdentities {
-    type Output = NodeIdentity;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.identities[index]
-    }
-}
-
-impl IndexMut<usize> for NodeIdentities {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.identities[index]
-    }
-}
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct NodeIdentity {

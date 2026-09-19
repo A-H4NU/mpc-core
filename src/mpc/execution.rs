@@ -28,7 +28,6 @@ use crate::{
     mpc::{
         NetworkPhaseOutput, Operation,
         circuit::{Round, WireId},
-        config::MpcConfig,
         scheme::MpcScheme,
     },
     networking::{Network, ReceiveRequest, RecvLen, SendLen},
@@ -51,7 +50,7 @@ where
     S: MpcScheme,
     N: Network,
 {
-    config: MpcConfig<S>,
+    circuit: crate::mpc::circuit::MpcCircuit<S>,
     execution_state: ExecutionState,
     network: N,
     wire_contents: WireMap<S>,
@@ -92,19 +91,12 @@ where
     S: MpcScheme,
     N: Network,
 {
-    pub fn new(config: MpcConfig<S>, network: N) -> Result<Self, ExecutionContextError> {
-        if config.n_parties() != network.n_players() {
-            return Err(ExecutionContextError::InvalidConfiguration {
-                msg: "Mismatch in party ids or counts".to_string(),
-            });
-        }
-        if config.my_id() != network.my_id() {
-            return Err(ExecutionContextError::InvalidConfiguration {
-                msg: "Mismatch in party ids or counts".to_string(),
-            });
-        }
+    pub fn new(
+        circuit: crate::mpc::circuit::MpcCircuit<S>,
+        network: N,
+    ) -> Result<Self, ExecutionContextError> {
         Ok(Self {
-            config,
+            circuit,
             execution_state: ExecutionState::NewBorn,
             network,
             wire_contents: HashMap::new(),
@@ -120,7 +112,7 @@ where
         assert_state!("handshake", self.execution_state, ExecutionState::NewBorn);
 
         let mut hasher = Sha3_512::new();
-        hasher.update(&postcard::to_stdvec(&self.config.circuit()).map_err(|e| {
+        hasher.update(&postcard::to_stdvec(&&self.circuit).map_err(|e| {
             ExecutionContextError::SchemeError {
                 phase: "scheme phase".to_string(),
                 msg: e.to_string(),
@@ -158,9 +150,9 @@ where
         }
 
         let context = self
-            .config
+            .circuit
             .scheme()
-            .establish_context(&mut self.network, self.config.circuit())
+            .establish_context(&mut self.network, &self.circuit)
             .map_err(|e| ExecutionContextError::SchemeError {
                 phase: "scheme phase".to_string(),
                 msg: e.to_string(),
@@ -204,7 +196,7 @@ where
                     msg: e.to_string(),
                 })?;
 
-            for (wire_id, wire_content) in itertools::zip_eq(op.outputs(), output.0) {
+            for (wire_id, wire_content) in itertools::zip_eq(op.outputs(), output) {
                 let prev = wire_contents.insert(wire_id, wire_content);
                 assert!(prev.is_none());
             }
@@ -286,7 +278,7 @@ where
         }
 
         for (op, output) in buffered_results {
-            for (wire_id, wire_content) in itertools::zip_eq(op.outputs(), output.0) {
+            for (wire_id, wire_content) in itertools::zip_eq(op.outputs(), output) {
                 let prev = wire_contents.insert(wire_id, wire_content);
                 assert!(prev.is_none());
             }
@@ -304,15 +296,15 @@ where
 
         let mut total_send_len = 0;
         let mut total_recv_len = 0;
-        for round in self.config.circuit().offline_rounds().iter() {
+        for round in self.circuit.offline_rounds().iter() {
             Self::do_local_operations(
-                self.config.circuit().scheme(),
+                &self.circuit.scheme(),
                 unsafe { self.scheme_context.assume_init_mut() },
                 &mut self.wire_contents,
                 round,
             )?;
             let (send_len, recv_len) = Self::do_network_operations(
-                self.config.circuit().scheme(),
+                &self.circuit.scheme(),
                 unsafe { self.scheme_context.assume_init_mut() },
                 &mut self.wire_contents,
                 &mut self.network,
@@ -340,8 +332,7 @@ where
         );
 
         let mut input_wires: HashMap<_, _> = self
-            .config
-            .circuit()
+            .circuit
             .get_input_operation_wire_ids_of_party(self.network.my_id())
             .map(|x| (x, false))
             .collect();
@@ -366,7 +357,7 @@ where
             return Err(ExecutionContextError::NotEnoughInputs);
         }
 
-        self.config
+        self.circuit
             .scheme()
             .prepare_user_input(unsafe { self.scheme_context.assume_init_mut() }, inputs);
 
@@ -384,15 +375,15 @@ where
 
         let mut total_send_len = 0;
         let mut total_recv_len = 0;
-        for round in self.config.circuit().online_rounds().iter() {
+        for round in self.circuit.online_rounds().iter() {
             Self::do_local_operations(
-                self.config.circuit().scheme(),
+                &self.circuit.scheme(),
                 unsafe { self.scheme_context.assume_init_mut() },
                 &mut self.wire_contents,
                 round,
             )?;
             let (send_len, recv_len) = Self::do_network_operations(
-                self.config.circuit().scheme(),
+                &self.circuit.scheme(),
                 unsafe { self.scheme_context.assume_init_mut() },
                 &mut self.wire_contents,
                 &mut self.network,
@@ -432,9 +423,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mpc::{
-        FinalizePhaseOutput, MpcCircuit, NetworkPhaseOutput, Operation, scheme::MpcScheme,
-    };
+    use crate::mpc::{MpcCircuit, NetworkPhaseOutput, Operation, scheme::MpcScheme};
     use crate::networking::{Network, ReceiveRequest, RecvLen, SendLen, SendRequest};
     use serde::{Deserialize, Serialize};
     use std::convert::Infallible;
@@ -518,11 +507,11 @@ mod tests {
             _c: &mut Self::Context,
             _p: Self::Pending<'a>,
             _n: I,
-        ) -> Result<FinalizePhaseOutput<Self>, Self::FinalizePhaseError>
+        ) -> Result<Vec<Self::Wire>, Self::FinalizePhaseError>
         where
             I: IntoIterator<Item = Self::NetworkElement>,
         {
-            Ok(FinalizePhaseOutput(vec![()]))
+            Ok(vec![()])
         }
     }
 
@@ -571,23 +560,7 @@ mod tests {
     fn setup(my_id: usize, n: usize) -> ExecutionContext<MockScheme, MockNetwork> {
         let ops = vec![MockOp::Input(0, WireId(0))];
         let circuit = MpcCircuit::new(ops, MockScheme).unwrap();
-        let config = MpcConfig::new(my_id, n, circuit).unwrap();
-        ExecutionContext::new(config, MockNetwork { n, id: my_id }).unwrap()
-    }
-
-    #[test]
-    fn test_handshake_mismatch() {
-        let ops = vec![MockOp::Input(0, WireId(0))];
-        let circuit = MpcCircuit::new(ops, MockScheme).unwrap();
-        let config = MpcConfig::new(0, 2, circuit).unwrap(); // expects 2
-        let err = match ExecutionContext::new(config, MockNetwork { n: 3, id: 0 }) {
-            Err(e) => e,
-            Ok(_) => panic!("Expected error"),
-        }; // actual 3
-        assert!(matches!(
-            err,
-            ExecutionContextError::InvalidConfiguration { .. }
-        ));
+        ExecutionContext::new(circuit, MockNetwork { n, id: my_id }).unwrap()
     }
 
     #[tokio::test]

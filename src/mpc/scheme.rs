@@ -39,9 +39,6 @@ pub struct NetworkPhaseOutput<'a, S: MpcScheme> {
     pub receive_request: Vec<ReceiveRequest<S::NetworkElement>>,
 }
 
-#[repr(transparent)]
-pub struct FinalizePhaseOutput<S: MpcScheme>(pub Vec<S::Wire>);
-
 /// A type that represents an MPC scheme.
 pub trait MpcScheme
 where
@@ -127,7 +124,7 @@ where
         context: &mut Self::Context,
         pending: Self::Pending<'a>,
         network_data: I,
-    ) -> Result<FinalizePhaseOutput<Self>, Self::FinalizePhaseError>
+    ) -> Result<Vec<Self::Wire>, Self::FinalizePhaseError>
     where
         I: IntoIterator<Item = Self::NetworkElement>;
 }

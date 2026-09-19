@@ -1,12 +1,11 @@
 use std::io;
-use std::num::NonZero;
 
 use chacha20poly1305::aead::generic_array::{GenericArray, typenum::Unsigned};
 use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, Key, KeyInit};
 use ed25519_dalek::{
     PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH, Signature, Signer, SigningKey, Verifier, VerifyingKey,
 };
-use serde::{Deserialize, Serialize};
+
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use x25519_dalek::{EphemeralSecret, PublicKey as XPublicKey};
 
@@ -90,56 +89,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureStream<S> {
 
         self.recv_counter += 1;
         Ok((buffer, U32_LEN + total_len))
-    }
-}
-
-impl<S: AsyncRead + AsyncWrite + Unpin> SecureStream<S> {
-    pub async fn send_object<T>(&mut self, obj: &T) -> io::Result<usize>
-    where
-        T: Serialize,
-    {
-        self.send_objects(core::slice::from_ref(obj)).await
-    }
-
-    pub async fn send_objects<T>(&mut self, objs: &[T]) -> io::Result<usize>
-    where
-        T: Serialize,
-    {
-        let data =
-            postcard::to_stdvec(objs).map_err(|_| io::Error::other("Serialization error"))?;
-        self.send(&data).await
-    }
-
-    pub async fn recv_object<T>(&mut self) -> io::Result<(T, usize)>
-    where
-        T: for<'de> Deserialize<'de>,
-    {
-        let (vec, received_bytes) = self
-            .recv_objects(Some(NonZero::<usize>::new(1).unwrap()))
-            .await?;
-        Ok((vec.into_iter().next().unwrap(), received_bytes))
-    }
-
-    pub async fn recv_objects<T>(
-        &mut self,
-        count: Option<NonZero<usize>>,
-    ) -> io::Result<(Vec<T>, usize)>
-    where
-        T: for<'de> Deserialize<'de>,
-    {
-        let (data, received_bytes) = self.recv().await?;
-        let objects: Vec<T> = postcard::from_bytes(&data)
-            .map_err(|e| io::Error::other(format!("Deserialization error: {}", e)))?;
-        if let Some(count) = count
-            && objects.len() != count.into()
-        {
-            return Err(io::Error::other(format!(
-                "Count mismatch: received {} objects, expected {}",
-                objects.len(),
-                count
-            )));
-        }
-        Ok((objects, received_bytes))
     }
 }
 

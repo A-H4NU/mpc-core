@@ -221,7 +221,7 @@ impl<S: MpcScheme> MpcCircuit<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mpc::{FinalizePhaseOutput, NetworkPhaseOutput};
+    use crate::mpc::NetworkPhaseOutput;
     use crate::networking::Network;
     use std::convert::Infallible;
 
@@ -318,11 +318,11 @@ mod tests {
             _context: &mut Self::Context,
             _pending: Self::Pending<'a>,
             _network_data: I,
-        ) -> Result<FinalizePhaseOutput<Self>, Self::FinalizePhaseError>
+        ) -> Result<Vec<Self::Wire>, Self::FinalizePhaseError>
         where
             I: IntoIterator<Item = Self::NetworkElement>,
         {
-            Ok(FinalizePhaseOutput(vec![()]))
+            Ok(vec![()])
         }
     }
 
@@ -437,11 +437,11 @@ mod tests {
                 _c: &mut Self::Context,
                 _p: Self::Pending<'a>,
                 _n: I,
-            ) -> Result<FinalizePhaseOutput<Self>, Self::FinalizePhaseError>
+            ) -> Result<Vec<Self::Wire>, Self::FinalizePhaseError>
             where
                 I: IntoIterator<Item = Self::NetworkElement>,
             {
-                Ok(FinalizePhaseOutput(vec![]))
+                Ok(vec![])
             }
         }
         let ops = vec![MockOp::Local(vec![], WireId(0))];

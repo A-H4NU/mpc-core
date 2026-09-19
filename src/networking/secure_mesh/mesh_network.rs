@@ -8,7 +8,6 @@ use tokio::{
     net::TcpStream,
 };
 
-use super::identity::NodeIdentities;
 use super::secure_stream::{ConnectionRole, SecureStream};
 use crate::networking::{Network, ReceiveRequest, RecvLen, SendLen, SendRequest};
 
@@ -106,7 +105,18 @@ impl Network for MeshNetwork {
                 let mut total_received_len = 0;
                 let mut objects_list = Vec::with_capacity(counts.len());
                 for (index, count) in counts {
-                    let (objects, received_len) = channel.recv_objects::<T>(count).await?;
+                    let (data, received_len) = channel.recv().await?;
+                    let objects: Vec<T> = postcard::from_bytes(&data)
+                        .map_err(|e| io::Error::other(format!("Deserialization error: {}", e)))?;
+                    if let Some(count) = count
+                        && objects.len() != count.get()
+                    {
+                        return Err(io::Error::other(format!(
+                            "Count mismatch: received {} objects, expected {}",
+                            objects.len(),
+                            count
+                        )));
+                    }
                     objects_list.push((index, objects));
                     total_received_len += received_len;
                 }
@@ -240,7 +250,7 @@ impl MeshNetwork {
     pub async fn from_identities(
         my_id: usize,
         my_secret_key: SigningKey,
-        identities: NodeIdentities,
+        identities: Vec<super::identity::NodeIdentity>,
     ) -> anyhow::Result<Self> {
         use tokio::net::TcpListener;
 
@@ -370,7 +380,7 @@ mod tests {
         let addr1 = listener1.local_addr().unwrap();
         drop(listener1);
 
-        let identities = NodeIdentities::new(vec![
+        let identities = vec![
             NodeIdentity {
                 address: addr0,
                 public_key: sk0.verifying_key(),
@@ -379,7 +389,7 @@ mod tests {
                 address: addr1,
                 public_key: sk1.verifying_key(),
             },
-        ]);
+        ];
 
         let f0 = MeshNetwork::from_identities(0, sk0.clone(), identities.clone());
         let f1 = MeshNetwork::from_identities(1, sk1.clone(), identities.clone());
@@ -404,7 +414,7 @@ mod tests {
         let addr1 = listener1.local_addr().unwrap();
         drop(listener1);
 
-        let identities = NodeIdentities::new(vec![
+        let identities = vec![
             NodeIdentity {
                 address: addr0,
                 public_key: sk0.verifying_key(),
@@ -413,7 +423,7 @@ mod tests {
                 address: addr1,
                 public_key: sk1.verifying_key(),
             },
-        ]);
+        ];
 
         let (mut net0, mut net1) = futures::try_join!(
             MeshNetwork::from_identities(0, sk0.clone(), identities.clone()),

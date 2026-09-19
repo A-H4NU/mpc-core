@@ -1,6 +1,4 @@
-use crate::mpc::{
-    FinalizePhaseOutput, MpcCircuit, MpcScheme, NetworkPhaseOutput, Operation, WireId,
-};
+use crate::mpc::{MpcCircuit, MpcScheme, NetworkPhaseOutput, Operation, WireId};
 use crate::networking::{Network, ReceiveRequest, SendRequest};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -255,7 +253,7 @@ impl<const M: u64> MpcScheme for AdditiveScheme<M> {
         _context: &mut Self::Context,
         pending: Self::Pending<'a>,
         network_data: I,
-    ) -> Result<FinalizePhaseOutput<Self>, Self::FinalizePhaseError>
+    ) -> Result<Vec<Self::Wire>, Self::FinalizePhaseError>
     where
         I: IntoIterator<Item = Self::NetworkElement>,
     {
@@ -273,17 +271,17 @@ impl<const M: u64> MpcScheme for AdditiveScheme<M> {
                         .expect("Expected share from inputter")
                         % M
                 };
-                Ok(FinalizePhaseOutput(vec![share]))
+                Ok(vec![share])
             }
             AdditivePending::GenRandom { my_share } | AdditivePending::Add { my_share } => {
-                Ok(FinalizePhaseOutput(vec![my_share]))
+                Ok(vec![my_share])
             }
             AdditivePending::Reveal { my_share } => {
                 let mut total = my_share;
                 for received in network_data_iter {
                     total = (total + received) % M;
                 }
-                Ok(FinalizePhaseOutput(vec![total]))
+                Ok(vec![total])
             }
         }
     }
@@ -398,8 +396,8 @@ mod tests {
 #[cfg(all(test, feature = "example-secure-network"))]
 mod secure_network_tests {
     use super::*;
-    use crate::mpc::{ExecutionContext, MpcCircuit, MpcConfig, WireId};
-    use crate::networking::secure_mesh::{MeshNetwork, NodeIdentities, NodeIdentity};
+    use crate::mpc::{ExecutionContext, MpcCircuit, WireId};
+    use crate::networking::secure_mesh::{MeshNetwork, NodeIdentity};
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
 
@@ -431,7 +429,7 @@ mod secure_network_tests {
                 public_key: vk,
             });
         }
-        let node_identities = NodeIdentities::new(identities);
+        let node_identities = identities;
 
         let ops = vec![
             AdditiveOperation::Input {
@@ -482,8 +480,7 @@ mod secure_network_tests {
 
             let exec_future = async move {
                 let circuit = MpcCircuit::new(ops_clone, scheme_clone).unwrap();
-                let config = MpcConfig::new(i, n_parties, circuit).unwrap();
-                let mut exec = ExecutionContext::new(config, network).unwrap();
+                let mut exec = ExecutionContext::new(circuit, network).unwrap();
 
                 exec.handshake().await.unwrap();
                 exec.do_offline().await.unwrap();
