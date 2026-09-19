@@ -370,4 +370,127 @@ mod tests {
             MockOp::Network(vec![WireId(2), WireId(4)], WireId(5))
         );
     }
+
+    #[test]
+    fn test_empty_circuit() {
+        let err = match MpcCircuit::new(Vec::<MockOp>::new(), MockScheme) {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(matches!(err, MpcCircuitError::EmptyCircuit));
+    }
+
+    #[test]
+    fn test_unsound_circuit() {
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        struct UnsoundScheme;
+        impl MpcScheme for UnsoundScheme {
+            type Context = ();
+            type NetworkElement = ();
+            type Wire = ();
+            type Input = ();
+            type Operation = MockOp;
+            type Pending<'a> = ();
+            type EstablishContextError = Infallible;
+            type NetworkPhaseError = Infallible;
+            type FinalizePhaseError = Infallible;
+            fn is_circuit_sound<'a, I>(&self, _circuit: I) -> bool
+            where
+                Self::Operation: 'a,
+                I: IntoIterator<Item = &'a Self::Operation>,
+            {
+                false
+            }
+            fn is_operation_local(&self, _op: &Self::Operation) -> bool {
+                true
+            }
+            fn establish_context<N: Network>(
+                &self,
+                _n: &mut N,
+                _c: &MpcCircuit<Self>,
+            ) -> Result<Self::Context, Self::EstablishContextError> {
+                Ok(())
+            }
+            fn prepare_user_input<I>(&self, _c: &mut Self::Context, _i: I)
+            where
+                I: IntoIterator<Item = (WireId, Self::Input)>,
+            {
+            }
+            fn do_network_phase<'a, I>(
+                &self,
+                _c: &mut Self::Context,
+                _o: &Self::Operation,
+                _i: I,
+            ) -> Result<NetworkPhaseOutput<'a, Self>, Self::NetworkPhaseError>
+            where
+                Self::Wire: 'a,
+                I: IntoIterator<Item = &'a Self::Wire>,
+            {
+                Ok(NetworkPhaseOutput {
+                    pending: (),
+                    send_request: vec![],
+                    receive_request: vec![],
+                })
+            }
+            fn do_finalize_phase<'a, I>(
+                &self,
+                _c: &mut Self::Context,
+                _p: Self::Pending<'a>,
+                _n: I,
+            ) -> Result<FinalizePhaseOutput<Self>, Self::FinalizePhaseError>
+            where
+                I: IntoIterator<Item = Self::NetworkElement>,
+            {
+                Ok(FinalizePhaseOutput(vec![]))
+            }
+        }
+        let ops = vec![MockOp::Local(vec![], WireId(0))];
+        let err = match MpcCircuit::new(ops, UnsoundScheme) {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(matches!(err, MpcCircuitError::CircuitUnsound));
+    }
+
+    #[test]
+    fn test_wire_produced_many_times() {
+        let ops = vec![
+            MockOp::Local(vec![], WireId(1)),
+            MockOp::Local(vec![], WireId(1)),
+        ];
+        let err = match MpcCircuit::new(ops, MockScheme) {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(matches!(
+            err,
+            MpcCircuitError::WireProducedManyTimes { wire: WireId(1) }
+        ));
+    }
+
+    #[test]
+    fn test_wire_consumed_but_not_produced() {
+        let ops = vec![MockOp::Local(vec![WireId(99)], WireId(1))];
+        let err = match MpcCircuit::new(ops, MockScheme) {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(matches!(
+            err,
+            MpcCircuitError::WireConsumedButNotProduced { wire: WireId(99) }
+        ));
+    }
+
+    #[test]
+    fn test_circuit_cyclic() {
+        let ops = vec![
+            MockOp::Local(vec![WireId(2)], WireId(1)),
+            MockOp::Local(vec![WireId(1)], WireId(2)),
+        ];
+        let err = match MpcCircuit::new(ops, MockScheme) {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(matches!(err, MpcCircuitError::CircuitCyclic));
+    }
 }

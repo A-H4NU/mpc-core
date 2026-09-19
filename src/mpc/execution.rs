@@ -1,6 +1,27 @@
 use itertools::Itertools;
 use sha3::{Digest, Sha3_512, digest::generic_array::GenericArray};
-use snafu::{self, ResultExt, Whatever};
+use snafu::{self, Snafu};
+
+#[derive(Debug, Snafu)]
+pub enum ExecutionContextError {
+    #[snafu(display("Invalid configuration: {msg}"))]
+    InvalidConfiguration { msg: String },
+    #[snafu(display("Execution state error: {op} not allowed in state {state:?}"))]
+    StateError { op: String, state: ExecutionState },
+    #[snafu(display("Network error: {source}"))]
+    NetworkError { source: std::io::Error },
+    #[snafu(display("Plan not agreed between parties"))]
+    PlanNotAgreed,
+    #[snafu(display("Duplicate input for wire {wire}"))]
+    DuplicateInput { wire: WireId },
+    #[snafu(display("Wire {wire} is not an output of an input operation"))]
+    InvalidInputWire { wire: WireId },
+    #[snafu(display("Not enough inputs provided"))]
+    NotEnoughInputs,
+    #[snafu(display("Scheme error during {phase}: {msg}"))]
+    SchemeError { phase: String, msg: String },
+}
+
 use std::{collections::HashMap, mem::MaybeUninit};
 
 use crate::{
@@ -13,7 +34,7 @@ use crate::{
     networking::{Network, ReceiveRequest, RecvLen, SendLen},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ExecutionState {
     NewBorn,         // just created, no action has been performed
     Handshaked,      // handshaked; checked that parties have the same mpc plan
@@ -57,16 +78,12 @@ where
 
 macro_rules! assert_state {
     ($fn_name:literal, $state_var:expr, $state_pat:pat) => {
-        assert!(
-            matches!($state_var, $state_pat),
-            concat!(
-                "`ExecutionContext::",
-                $fn_name,
-                "` must be called when `ExecutionContext::execution_state` is `",
-                stringify!($state_pat),
-                "`"
-            )
-        )
+        if !matches!($state_var, $state_pat) {
+            return Err(ExecutionContextError::StateError {
+                op: $fn_name.to_string(),
+                state: $state_var,
+            });
+        }
     };
 }
 
@@ -75,12 +92,16 @@ where
     S: MpcScheme,
     N: Network,
 {
-    pub fn new(config: MpcConfig<S>, network: N) -> Result<Self, Whatever> {
+    pub fn new(config: MpcConfig<S>, network: N) -> Result<Self, ExecutionContextError> {
         if config.n_parties() != network.n_players() {
-            snafu::whatever!("#parties mismatch");
+            return Err(ExecutionContextError::InvalidConfiguration {
+                msg: "Mismatch in party ids or counts".to_string(),
+            });
         }
         if config.my_id() != network.my_id() {
-            snafu::whatever!("Id mismatch");
+            return Err(ExecutionContextError::InvalidConfiguration {
+                msg: "Mismatch in party ids or counts".to_string(),
+            });
         }
         Ok(Self {
             config,
@@ -95,22 +116,24 @@ where
         &self.execution_state
     }
 
-    pub async fn handshake(&mut self) -> Result<(SendLen, RecvLen), Whatever> {
-        fn ctx<E: std::error::Error>(_: &mut E) -> String {
-            "Handshake error".to_string()
-        }
-
+    pub async fn handshake(&mut self) -> Result<(SendLen, RecvLen), ExecutionContextError> {
         assert_state!("handshake", self.execution_state, ExecutionState::NewBorn);
 
         let mut hasher = Sha3_512::new();
-        hasher.update(&postcard::to_stdvec(&self.config.circuit()).with_whatever_context(ctx)?);
+        hasher.update(&postcard::to_stdvec(&self.config.circuit()).map_err(|e| {
+            ExecutionContextError::SchemeError {
+                phase: "scheme phase".to_string(),
+                msg: e.to_string(),
+            }
+        })?);
         let hash = hasher.finalize();
 
-        let send_len = self
-            .network
-            .broadcast_object(&hash)
-            .await
-            .with_whatever_context(ctx)?;
+        let send_len = self.network.broadcast_object(&hash).await.map_err(|e| {
+            ExecutionContextError::SchemeError {
+                phase: "scheme phase".to_string(),
+                msg: e.to_string(),
+            }
+        })?;
 
         let my_id = self.network.my_id();
         let request: Vec<_> = (0..self.network.n_players())
@@ -122,20 +145,26 @@ where
             .network
             .recv_objects_many::<GenericArray<_, _>, _>(&request)
             .await
-            .with_whatever_context(ctx)?;
+            .map_err(|e| ExecutionContextError::SchemeError {
+                phase: "scheme phase".to_string(),
+                msg: e.to_string(),
+            })?;
 
         if hashes
             .into_iter()
             .any(|x| x.into_iter().next().unwrap() != hash)
         {
-            snafu::whatever!("Plan not agreed");
+            return Err(ExecutionContextError::PlanNotAgreed);
         }
 
         let context = self
             .config
             .scheme()
             .establish_context(&mut self.network, self.config.circuit())
-            .with_whatever_context(ctx)?;
+            .map_err(|e| ExecutionContextError::SchemeError {
+                phase: "scheme phase".to_string(),
+                msg: e.to_string(),
+            })?;
         self.scheme_context = MaybeUninit::new(context);
 
         self.execution_state = ExecutionState::Handshaked;
@@ -147,11 +176,7 @@ where
         context: &mut S::Context,
         wire_contents: &mut WireMap<S>,
         round: &Round<S>,
-    ) -> Result<(), Whatever> {
-        fn ctx<E: std::error::Error>(_: &mut E) -> String {
-            "Local operation error".to_string()
-        }
-
+    ) -> Result<(), ExecutionContextError> {
         let ops = round.local_operations();
 
         for op in ops {
@@ -163,15 +188,21 @@ where
                 pending,
                 send_request,
                 receive_request,
-            } = scheme
-                .do_network_phase(context, op, inputs)
-                .with_whatever_context(ctx)?;
+            } = scheme.do_network_phase(context, op, inputs).map_err(|e| {
+                ExecutionContextError::SchemeError {
+                    phase: "scheme phase".to_string(),
+                    msg: e.to_string(),
+                }
+            })?;
             assert!(send_request.is_empty());
             assert!(receive_request.is_empty());
 
             let output = scheme
                 .do_finalize_phase(context, pending, Vec::new())
-                .with_whatever_context(ctx)?;
+                .map_err(|e| ExecutionContextError::SchemeError {
+                    phase: "scheme phase".to_string(),
+                    msg: e.to_string(),
+                })?;
 
             for (wire_id, wire_content) in itertools::zip_eq(op.outputs(), output.0) {
                 let prev = wire_contents.insert(wire_id, wire_content);
@@ -188,11 +219,7 @@ where
         wire_contents: &mut WireMap<S>,
         network: &mut N,
         round: &Round<S>,
-    ) -> Result<(SendLen, RecvLen), Whatever> {
-        fn ctx<E: std::error::Error>(_: &mut E) -> String {
-            "Network operation error".to_string()
-        }
-
+    ) -> Result<(SendLen, RecvLen), ExecutionContextError> {
         let ops = round.network_operations();
 
         let mut pending_ops = Vec::with_capacity(ops.len());
@@ -210,9 +237,12 @@ where
                 pending,
                 mut send_request,
                 mut receive_request,
-            } = scheme
-                .do_network_phase(context, op, inputs)
-                .with_whatever_context(ctx)?;
+            } = scheme.do_network_phase(context, op, inputs).map_err(|e| {
+                ExecutionContextError::SchemeError {
+                    phase: "scheme phase".to_string(),
+                    msg: e.to_string(),
+                }
+            })?;
 
             pending_ops.push(pending);
             receive_request_counts.push(receive_request.len());
@@ -226,12 +256,18 @@ where
         let send_len = network
             .send_objects_many(&all_send_requests)
             .await
-            .with_whatever_context(ctx)?;
+            .map_err(|e| ExecutionContextError::SchemeError {
+                phase: "scheme phase".to_string(),
+                msg: e.to_string(),
+            })?;
 
         let (flat_network_data, recv_len) = network
             .recv_objects_many::<S::NetworkElement, _>(&all_receive_requests)
             .await
-            .with_whatever_context(ctx)?;
+            .map_err(|e| ExecutionContextError::SchemeError {
+                phase: "scheme phase".to_string(),
+                msg: e.to_string(),
+            })?;
 
         let mut data_iter = flat_network_data.into_iter();
 
@@ -242,7 +278,10 @@ where
             let op_data: Vec<_> = data_iter.by_ref().take(req_count).flatten().collect();
             let output = scheme
                 .do_finalize_phase(context, pending, op_data)
-                .with_whatever_context(ctx)?;
+                .map_err(|e| ExecutionContextError::SchemeError {
+                    phase: "scheme phase".to_string(),
+                    msg: e.to_string(),
+                })?;
             buffered_results.push((op, output));
         }
 
@@ -256,7 +295,7 @@ where
         Ok((send_len, recv_len))
     }
 
-    pub async fn do_offline(&mut self) -> Result<(SendLen, RecvLen), Whatever> {
+    pub async fn do_offline(&mut self) -> Result<(SendLen, RecvLen), ExecutionContextError> {
         assert_state!(
             "do_offline",
             self.execution_state,
@@ -289,7 +328,7 @@ where
         Ok((total_send_len, total_recv_len))
     }
 
-    pub fn prepare_input<I>(&mut self, user_inputs: I) -> Result<(), Whatever>
+    pub fn prepare_input<I>(&mut self, user_inputs: I) -> Result<(), ExecutionContextError>
     where
         I: IntoIterator<Item = (WireId, S::Input)>,
     {
@@ -314,15 +353,17 @@ where
                     *occupied_entry.get_mut() = true;
                     inputs.push((wire_id, input));
                 }
-                Entry::Occupied(_) => snafu::whatever!("Duplicate input for wire {}", wire_id),
+                Entry::Occupied(_) => {
+                    return Err(ExecutionContextError::DuplicateInput { wire: wire_id });
+                }
                 Entry::Vacant(_) => {
-                    snafu::whatever!("Wire {} is not an output of an input operation", wire_id)
+                    return Err(ExecutionContextError::InvalidInputWire { wire: wire_id });
                 }
             };
         }
 
         if inputs.len() < input_wires.len() {
-            snafu::whatever!("Not enough inputs are provided");
+            return Err(ExecutionContextError::NotEnoughInputs);
         }
 
         self.config
@@ -334,7 +375,7 @@ where
         Ok(())
     }
 
-    pub async fn do_online(&mut self) -> Result<(SendLen, RecvLen), Whatever> {
+    pub async fn do_online(&mut self) -> Result<(SendLen, RecvLen), ExecutionContextError> {
         assert_state!(
             "do_online",
             self.execution_state,
@@ -368,6 +409,10 @@ where
         Ok((total_send_len, total_recv_len))
     }
 
+    pub fn get_wire(&self, id: WireId) -> Option<&S::Wire> {
+        self.wire_contents.get(&id)
+    }
+
     pub fn dump_wires_with_filter<P>(&self, mut predicate: P)
     where
         P: FnMut(&S::Wire) -> bool,
@@ -381,5 +426,233 @@ where
             .collect_vec();
 
         println!("{:#?}", to_print);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mpc::{
+        FinalizePhaseOutput, MpcCircuit, NetworkPhaseOutput, Operation, scheme::MpcScheme,
+    };
+    use crate::networking::{Network, ReceiveRequest, RecvLen, SendLen, SendRequest};
+    use serde::{Deserialize, Serialize};
+    use std::convert::Infallible;
+    use std::future::Future;
+    use std::io;
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    enum MockOp {
+        Input(usize, WireId),
+    }
+
+    impl Operation for MockOp {
+        fn get_input_party_id(&self) -> Option<usize> {
+            match self {
+                MockOp::Input(party, _) => Some(*party),
+            }
+        }
+        fn inputs<'a>(&'a self) -> Box<dyn Iterator<Item = WireId> + 'a> {
+            Box::new(std::iter::empty())
+        }
+        fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = WireId> + 'a> {
+            match self {
+                MockOp::Input(_, out) => Box::new(std::iter::once(*out)),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct MockScheme;
+
+    impl MpcScheme for MockScheme {
+        type Context = ();
+        type NetworkElement = ();
+        type Wire = ();
+        type Input = ();
+        type Operation = MockOp;
+        type Pending<'a> = ();
+        type EstablishContextError = Infallible;
+        type NetworkPhaseError = Infallible;
+        type FinalizePhaseError = Infallible;
+        fn is_circuit_sound<'a, I>(&self, _c: I) -> bool
+        where
+            Self::Operation: 'a,
+            I: IntoIterator<Item = &'a Self::Operation>,
+        {
+            true
+        }
+        fn is_operation_local(&self, _op: &Self::Operation) -> bool {
+            false
+        }
+        fn establish_context<N: Network>(
+            &self,
+            _n: &mut N,
+            _c: &MpcCircuit<Self>,
+        ) -> Result<Self::Context, Self::EstablishContextError> {
+            Ok(())
+        }
+        fn prepare_user_input<I>(&self, _c: &mut Self::Context, _i: I)
+        where
+            I: IntoIterator<Item = (WireId, Self::Input)>,
+        {
+        }
+        fn do_network_phase<'a, I>(
+            &self,
+            _c: &mut Self::Context,
+            _o: &Self::Operation,
+            _i: I,
+        ) -> Result<NetworkPhaseOutput<'a, Self>, Self::NetworkPhaseError>
+        where
+            Self::Wire: 'a,
+            I: IntoIterator<Item = &'a Self::Wire>,
+        {
+            Ok(NetworkPhaseOutput {
+                pending: (),
+                send_request: vec![],
+                receive_request: vec![],
+            })
+        }
+        fn do_finalize_phase<'a, I>(
+            &self,
+            _c: &mut Self::Context,
+            _p: Self::Pending<'a>,
+            _n: I,
+        ) -> Result<FinalizePhaseOutput<Self>, Self::FinalizePhaseError>
+        where
+            I: IntoIterator<Item = Self::NetworkElement>,
+        {
+            Ok(FinalizePhaseOutput(vec![()]))
+        }
+    }
+
+    struct MockNetwork {
+        n: usize,
+        id: usize,
+    }
+    impl Network for MockNetwork {
+        fn n_players(&self) -> usize {
+            self.n
+        }
+        fn my_id(&self) -> usize {
+            self.id
+        }
+        fn send_objects_many<'a, T, I>(
+            &mut self,
+            _req: I,
+        ) -> impl Future<Output = io::Result<SendLen>>
+        where
+            T: Serialize + Clone + 'a,
+            I: IntoIterator<Item = &'a SendRequest<'a, T>>,
+        {
+            async move { Ok(0) }
+        }
+        fn send(&mut self, _to: usize, _data: &[u8]) -> impl Future<Output = io::Result<SendLen>> {
+            async move { Ok(0) }
+        }
+        fn broadcast(&mut self, _data: &[u8]) -> impl Future<Output = io::Result<SendLen>> {
+            async move { Ok(0) }
+        }
+        fn recv(&mut self, _from: usize) -> impl Future<Output = io::Result<(Vec<u8>, RecvLen)>> {
+            async move { Ok((vec![], 0)) }
+        }
+        fn recv_objects_many<'a, T, I>(
+            &mut self,
+            _req: I,
+        ) -> impl Future<Output = io::Result<(Vec<Vec<T>>, RecvLen)>>
+        where
+            T: for<'de> Deserialize<'de> + 'a,
+            I: IntoIterator<Item = &'a ReceiveRequest<T>>,
+        {
+            async move { Ok((vec![], 0)) }
+        }
+    }
+
+    fn setup(my_id: usize, n: usize) -> ExecutionContext<MockScheme, MockNetwork> {
+        let ops = vec![MockOp::Input(0, WireId(0))];
+        let circuit = MpcCircuit::new(ops, MockScheme).unwrap();
+        let config = MpcConfig::new(my_id, n, circuit).unwrap();
+        ExecutionContext::new(config, MockNetwork { n, id: my_id }).unwrap()
+    }
+
+    #[test]
+    fn test_handshake_mismatch() {
+        let ops = vec![MockOp::Input(0, WireId(0))];
+        let circuit = MpcCircuit::new(ops, MockScheme).unwrap();
+        let config = MpcConfig::new(0, 2, circuit).unwrap(); // expects 2
+        let err = match ExecutionContext::new(config, MockNetwork { n: 3, id: 0 }) {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        }; // actual 3
+        assert!(matches!(
+            err,
+            ExecutionContextError::InvalidConfiguration { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_state_machine_order() {
+        let mut exec = setup(0, 2);
+
+        // Calling prepare_input before handshake/offline fails
+        let err = match exec.prepare_input(vec![]) {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(matches!(err, ExecutionContextError::StateError { .. }));
+
+        // Calling do_online before handshake/offline fails
+        let err = match exec.do_online().await {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(matches!(err, ExecutionContextError::StateError { .. }));
+
+        exec.handshake().await.unwrap();
+        exec.do_offline().await.unwrap();
+
+        // Calling do_offline again fails
+        let err = match exec.do_offline().await {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(matches!(err, ExecutionContextError::StateError { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_input_validation() {
+        let mut exec = setup(0, 2); // input belongs to party 0
+        exec.handshake().await.unwrap();
+        exec.do_offline().await.unwrap();
+
+        // Missing inputs
+        let err = match exec.prepare_input(vec![]) {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(matches!(err, ExecutionContextError::NotEnoughInputs));
+
+        // Invalid wire id
+        let err = match exec.prepare_input(vec![(WireId(0), ()), (WireId(99), ())]) {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(matches!(
+            err,
+            ExecutionContextError::InvalidInputWire { wire: WireId(99) }
+        ));
+
+        // Duplicate inputs
+        let err = match exec.prepare_input(vec![(WireId(0), ()), (WireId(0), ())]) {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(matches!(
+            err,
+            ExecutionContextError::DuplicateInput { wire: WireId(0) }
+        ));
+
+        // Correct inputs
+        exec.prepare_input(vec![(WireId(0), ())]).unwrap();
     }
 }

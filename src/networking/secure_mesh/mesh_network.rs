@@ -349,3 +349,90 @@ impl MeshNetwork {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::networking::secure_mesh::identity::NodeIdentity;
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    #[tokio::test]
+    async fn test_mesh_handshake() {
+        let sk0 = SigningKey::generate(&mut OsRng);
+        let sk1 = SigningKey::generate(&mut OsRng);
+
+        let listener0 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr0 = listener0.local_addr().unwrap();
+        drop(listener0);
+
+        let listener1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr1 = listener1.local_addr().unwrap();
+        drop(listener1);
+
+        let identities = NodeIdentities::new(vec![
+            NodeIdentity {
+                address: addr0,
+                public_key: sk0.verifying_key(),
+            },
+            NodeIdentity {
+                address: addr1,
+                public_key: sk1.verifying_key(),
+            },
+        ]);
+
+        let f0 = MeshNetwork::from_identities(0, sk0.clone(), identities.clone());
+        let f1 = MeshNetwork::from_identities(1, sk1.clone(), identities.clone());
+
+        let (net0, net1) = futures::try_join!(f0, f1).unwrap();
+
+        assert_eq!(net0.my_id(), 0);
+        assert_eq!(net1.my_id(), 1);
+        assert_eq!(net0.n_players(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_mesh_send_recv() {
+        let sk0 = SigningKey::generate(&mut OsRng);
+        let sk1 = SigningKey::generate(&mut OsRng);
+
+        let listener0 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr0 = listener0.local_addr().unwrap();
+        drop(listener0);
+
+        let listener1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr1 = listener1.local_addr().unwrap();
+        drop(listener1);
+
+        let identities = NodeIdentities::new(vec![
+            NodeIdentity {
+                address: addr0,
+                public_key: sk0.verifying_key(),
+            },
+            NodeIdentity {
+                address: addr1,
+                public_key: sk1.verifying_key(),
+            },
+        ]);
+
+        let (mut net0, mut net1) = futures::try_join!(
+            MeshNetwork::from_identities(0, sk0.clone(), identities.clone()),
+            MeshNetwork::from_identities(1, sk1.clone(), identities.clone())
+        )
+        .unwrap();
+
+        let data_to_send = vec![42u32, 43u32];
+        let send_req = SendRequest::new(1, data_to_send);
+
+        let send_fut = net0.send_objects_many::<Vec<u32>, _>(vec![&send_req]);
+        let recv_req = ReceiveRequest::new(0, 1);
+        let recv_fut = net1.recv_objects_many::<Vec<u32>, _>(vec![&recv_req]);
+
+        let (send_res, recv_res) = futures::try_join!(send_fut, recv_fut).unwrap();
+        assert!(send_res > 0);
+
+        let (received_data, recv_len) = recv_res;
+        assert_eq!(received_data, vec![vec![vec![42u32, 43u32]]]);
+        assert!(recv_len > 0);
+    }
+}
