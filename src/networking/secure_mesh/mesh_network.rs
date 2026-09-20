@@ -104,22 +104,32 @@ impl Network for MeshNetwork {
             let task = async move {
                 let mut total_received_len = 0;
                 let mut objects_list = Vec::with_capacity(counts.len());
+                let (data, received_len) = channel.recv().await?;
+                total_received_len += received_len;
+                let mut objects: Vec<T> = postcard::from_bytes(&data)
+                    .map_err(|e| io::Error::other(format!("Deserialization error: {}", e)))?;
+
+                // Splitting objects according to counts
                 for (index, count) in counts {
-                    let (data, received_len) = channel.recv().await?;
-                    let objects: Vec<T> = postcard::from_bytes(&data)
-                        .map_err(|e| io::Error::other(format!("Deserialization error: {}", e)))?;
-                    if let Some(count) = count
-                        && objects.len() != count.get()
-                    {
+                    let expected = count.map(|c| c.get()).unwrap_or(1);
+                    if objects.len() < expected {
                         return Err(io::Error::other(format!(
-                            "Count mismatch: received {} objects, expected {}",
-                            objects.len(),
-                            count
+                            "Count mismatch: expected {} objects, but only {} left",
+                            expected,
+                            objects.len()
                         )));
                     }
-                    objects_list.push((index, objects));
-                    total_received_len += received_len;
+                    let chunk = objects.drain(0..expected).collect();
+                    objects_list.push((index, chunk));
                 }
+
+                if !objects.is_empty() {
+                    return Err(io::Error::other(format!(
+                        "Count mismatch: {} objects left over",
+                        objects.len()
+                    )));
+                }
+
                 Ok::<_, io::Error>((total_received_len, from, channel, objects_list))
             };
 
