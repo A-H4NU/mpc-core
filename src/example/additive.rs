@@ -399,7 +399,6 @@ mod secure_network_tests {
     use crate::mpc::{ExecutionContext, MpcCircuit, WireId};
     use crate::networking::secure_mesh::{MeshNetwork, NodeIdentity};
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
 
     #[tokio::test]
     async fn test_additive_mpc_3_parties() {
@@ -415,7 +414,9 @@ mod secure_network_tests {
         // To be safer in tests, let's use 127.0.0.1 with random ports.
 
         for _ in 0..n_parties {
-            let sk = SigningKey::generate(&mut OsRng);
+            let mut b = [0u8; 32];
+            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut b);
+            let sk = SigningKey::from_bytes(&b);
             let vk = sk.verifying_key();
             // We use a hacky way to find free ports by binding to 0 and then dropping.
             // This is still racey but better than fixed ports.

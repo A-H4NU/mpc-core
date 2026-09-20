@@ -1,13 +1,12 @@
 use std::io;
 
-use chacha20poly1305::aead::generic_array::{GenericArray, typenum::Unsigned};
-use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, Key, KeyInit};
+use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce, aead::AeadInOut};
 use ed25519_dalek::{
     PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH, Signature, Signer, SigningKey, Verifier, VerifyingKey,
 };
 
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
-use x25519_dalek::{EphemeralSecret, PublicKey as XPublicKey};
+use x25519_dalek::{PublicKey as XPublicKey, StaticSecret};
 
 pub struct SecureStream<S: AsyncRead + AsyncWrite + Unpin> {
     inner: S,
@@ -24,12 +23,12 @@ pub enum ConnectionRole {
 }
 
 const U32_LEN: usize = u32::BITS as usize / 8;
-const TAG_LEN: usize = <ChaCha20Poly1305 as chacha20poly1305::AeadCore>::TagSize::USIZE;
+const TAG_LEN: usize = 16;
 
 impl<S: AsyncRead + AsyncWrite + Unpin> SecureStream<S> {
     pub fn new(stream: S, shared_secret: &[u8; 32], role: ConnectionRole) -> Self {
-        let key = Key::from_slice(shared_secret);
-        let cipher = ChaCha20Poly1305::new(key);
+        let key = Key::from(*shared_secret);
+        let cipher = ChaCha20Poly1305::new(&key);
         Self {
             inner: stream,
             cipher,
@@ -45,14 +44,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureStream<S> {
         if self.role == ConnectionRole::Listener {
             nonce_bytes[0] = 1_u8;
         }
-        let nonce = GenericArray::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         let total_len = data.len() + TAG_LEN;
         let total_len_bytes = (total_len as u32).to_be_bytes();
 
         let mut buffer = data.to_vec();
         self.cipher
-            .encrypt_in_place(nonce, &total_len_bytes, &mut buffer)
+            .encrypt_in_place(&nonce, &total_len_bytes, &mut buffer)
             .map_err(|_| io::Error::other("Encryption error"))?;
 
         debug_assert!(buffer.len() == total_len);
@@ -81,10 +80,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureStream<S> {
         if self.role == ConnectionRole::Initiator {
             nonce_bytes[0] = 1_u8;
         }
-        let nonce = GenericArray::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         self.cipher
-            .decrypt_in_place(nonce, &len_buf, &mut buffer)
+            .decrypt_in_place(&nonce, &len_buf, &mut buffer)
             .map_err(|_| io::Error::other("Decryption error"))?;
 
         self.recv_counter += 1;
@@ -100,7 +99,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> SecureStream<S> {
         role: ConnectionRole,
     ) -> io::Result<SecureStream<S>> {
         // 1. Generate Ephemeral (Session) Keys (X25519)
-        let my_secret = EphemeralSecret::random_from_rng(chacha20poly1305::aead::OsRng);
+        let mut secret_bytes = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut secret_bytes);
+        let my_secret = StaticSecret::from(secret_bytes);
         let my_public = XPublicKey::from(&my_secret);
 
         // 2. Send My Ephemeral Public Key

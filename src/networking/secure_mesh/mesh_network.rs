@@ -375,12 +375,15 @@ mod tests {
     use super::*;
     use crate::networking::secure_mesh::identity::NodeIdentity;
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
 
     #[tokio::test]
     async fn test_mesh_handshake() {
-        let sk0 = SigningKey::generate(&mut OsRng);
-        let sk1 = SigningKey::generate(&mut OsRng);
+        let mut b0 = [0u8; 32];
+        let mut b1 = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut b0);
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut b1);
+        let sk0 = SigningKey::from_bytes(&b0);
+        let sk1 = SigningKey::from_bytes(&b1);
 
         let listener0 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr0 = listener0.local_addr().unwrap();
@@ -413,8 +416,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_mesh_send_recv() {
-        let sk0 = SigningKey::generate(&mut OsRng);
-        let sk1 = SigningKey::generate(&mut OsRng);
+        let mut b0 = [0u8; 32];
+        let mut b1 = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut b0);
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut b1);
+        let sk0 = SigningKey::from_bytes(&b0);
+        let sk1 = SigningKey::from_bytes(&b1);
 
         let listener0 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr0 = listener0.local_addr().unwrap();

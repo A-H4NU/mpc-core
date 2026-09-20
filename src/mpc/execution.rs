@@ -27,7 +27,7 @@ impl std::error::Error for ExecutionContextError {
     }
 }
 use itertools::Itertools;
-use sha3::{Digest, Sha3_512, digest::generic_array::GenericArray};
+use sha3::{Digest, Sha3_512};
 
 #[derive(Debug)]
 pub enum ExecutionContextError {
@@ -136,7 +136,7 @@ where
                 msg: e.to_string(),
             }
         })?);
-        let hash = hasher.finalize();
+        let hash: Vec<u8> = hasher.finalize().to_vec();
 
         let send_len = self.network.broadcast_object(&hash).await.map_err(|e| {
             ExecutionContextError::SchemeError {
@@ -153,7 +153,7 @@ where
 
         let (hashes, recv_len) = self
             .network
-            .recv_objects_many::<GenericArray<_, _>, _>(&request)
+            .recv_objects_many::<Vec<u8>, _>(&request)
             .await
             .map_err(|e| ExecutionContextError::SchemeError {
                 phase: "scheme phase".to_string(),
