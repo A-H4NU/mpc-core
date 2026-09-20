@@ -107,6 +107,18 @@ mpc-core = "0.1.0"
 *Note: This crate relies on advanced Rust features and requires Rust edition
 2024 or later.*
 
+## Contributing
+
+Before submitting a pull request, please ensure you have our rigorous git hooks
+configured locally. This guarantees you catch any formatting, compilation, or
+clippy issues *before* committing.
+
+Run this command once after cloning the repository:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## License
 
 Dual-licensed under either of:

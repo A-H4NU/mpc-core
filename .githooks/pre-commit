@@ -1,0 +1,46 @@
+#!/bin/sh
+# .githooks/pre-commit
+
+# A rigorous pre-commit hook tailored for the mpc-core Rust cryptography project.
+
+echo "Running mpc-core pre-commit checks..."
+
+if git diff --cached --name-only | grep -E '\.py$'; then
+    echo "ERROR: You are trying to commit a .py script!"
+    exit 1
+fi
+
+if git diff --cached -p | grep -E '^\+.*(dbg!|println!)'; then
+    echo "WARNING: You are committing a dbg! or println! statement."
+fi
+
+echo "Checking code formatting..."
+if ! cargo fmt --all -- --check; then
+    echo "ERROR: Code formatting failed."
+    exit 1
+fi
+
+echo "Checking feature combinations with cargo-hack..."
+if ! cargo hack check --feature-powerset; then
+    echo "ERROR: cargo check failed on some feature combination."
+    exit 1
+fi
+
+if ! cargo hack clippy --feature-powerset -- -D warnings; then
+    echo "ERROR: cargo clippy found warnings on some feature combination."
+    exit 1
+fi
+
+if ! cargo hack test --feature-powerset; then
+    echo "ERROR: cargo test failed on some feature combination."
+    exit 1
+fi
+
+echo "Running doctests..."
+if ! cargo test --doc --all-features; then
+    echo "ERROR: Doctests failed!"
+    exit 1
+fi
+
+echo "All checks passed! Proceeding with commit..."
+exit 0
