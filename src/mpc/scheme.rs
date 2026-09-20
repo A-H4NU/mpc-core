@@ -28,14 +28,20 @@ pub trait Operation {
     /// Return the iterator of the output wires of this operation.
     fn outputs<'a>(&'a self) -> Box<dyn Iterator<Item = WireId> + 'a>;
 
+    /// Evaluates whether the operation inherently represents an input collection
+    /// routine rather than an arithmetic or combinatorial computation.
     fn is_input(&self) -> bool {
         self.get_input_party_id().is_some()
     }
 }
 
+/// An aggregate of transmission and reception requests resolved for a single network phase.
 pub struct NetworkPhaseOutput<'a, S: MpcScheme> {
+    /// The uncompleted operations waiting for network synchronization.
     pub pending: S::Pending<'a>,
+    /// The objects queued for network transmission in this phase.
     pub send_request: Vec<SendRequest<'a, S::NetworkElement>>,
+    /// The anticipated incoming objects required before progression.
     pub receive_request: Vec<ReceiveRequest<S::NetworkElement>>,
 }
 
@@ -81,14 +87,17 @@ where
         Self::Operation: 'a,
         I: IntoIterator<Item = &'a Self::Operation>;
 
-    /// Returns `true` if `op` can be done without communication whenever the inputs are ready.
+    /// Evaluates whether the specified computational operation can be resolved
+    /// strictly locally, without necessitating network topology communication,
+    /// assuming all predecessor wire dependencies are materialized.
     ///
-    /// ```rust,ignore
-    /// // The "input" operation of this scheme must not be local.
-    /// assert!(!op.is_input() || !scheme.is_operation_local(op));
-    /// ```
+    /// **Topological Restriction**: An operation inherently designated as an input
+    /// collection routine (`Operation::is_input() == true`) is mathematically
+    /// precluded from classification as a local operation. Returning `true` for an
+    /// input operation induces a violation of the bipartite network wave separation
+    /// invariants during offline/online phase sorting.
     ///
-    /// * `op`: The operation.
+    /// * `op`: The target cryptographic or arithmetic operation.
     fn is_operation_local(&self, op: &Self::Operation) -> bool;
 
     /// Specify how the context should be established given a network and the circuit.

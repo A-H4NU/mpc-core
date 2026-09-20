@@ -29,16 +29,48 @@ impl std::error::Error for ExecutionContextError {
 use itertools::Itertools;
 use sha3::{Digest, Sha3_512};
 
+/// Enumerates the exhaustive set of failure modalities that can manifest
+/// during the execution of a multiparty computation circuit.
 #[derive(Debug)]
 pub enum ExecutionContextError {
-    InvalidConfiguration { msg: String },
-    StateError { op: String, state: ExecutionState },
-    NetworkError { source: std::io::Error },
+    /// Raised when the configuration matrix provided to the execution context is invalid.
+    InvalidConfiguration {
+        /// A descriptive diagnostic detailing the exact configuration failure.
+        msg: String,
+    },
+    /// Raised when a phase transition operation is invoked in a non-compliant state.
+    StateError {
+        /// The stringified identifier of the requested operation.
+        op: String,
+        /// The current immutable state of the state machine.
+        state: ExecutionState,
+    },
+    /// Raised when asynchronous I/O fails over the network boundary.
+    NetworkError {
+        /// The underlying POSIX or Tokio I/O error object.
+        source: std::io::Error,
+    },
+    /// Raised when multiparty members possess disparate topology hashes for the circuit.
     PlanNotAgreed,
-    DuplicateInput { wire: WireId },
-    InvalidInputWire { wire: WireId },
+    /// Raised when a user attempts to populate a circuit input multiple times.
+    DuplicateInput {
+        /// The identifier of the input wire which was redundantly specified.
+        wire: WireId,
+    },
+    /// Raised when an input assignment targets a wire that is not defined as an input.
+    InvalidInputWire {
+        /// The identifier of the non-input wire targeted for assignment.
+        wire: WireId,
+    },
+    /// Raised when the protocol requires more input materials than the user supplied.
     NotEnoughInputs,
-    SchemeError { phase: String, msg: String },
+    /// Raised when the underlying cryptographic scheme aborts dynamically.
+    SchemeError {
+        /// The chronological phase of the multiparty scheme (e.g. offline, online).
+        phase: String,
+        /// An associated message from the scheme encapsulating the error semantics.
+        msg: String,
+    },
 }
 
 use std::{collections::HashMap, mem::MaybeUninit};
@@ -52,17 +84,75 @@ use crate::{
     networking::{Network, ReceiveRequest, RecvLen, SendLen},
 };
 
+/// Represents the deterministic, discretely bounded states of a multiparty computation.
 #[derive(Debug, Clone, Copy)]
 pub enum ExecutionState {
-    NewBorn,         // just created, no action has been performed
-    Handshaked,      // handshaked; checked that parties have the same mpc plan
-    FinishedOffline, // finished offline rounds
-    ReadyOnline,     // accepted inputs from user
-    Finished,        // finished execution
+    /// Newly instantiated context, untouched by any evaluation logic.
+    NewBorn,
+    /// Topological synchronization is complete and agreement is proven across peers.
+    Handshaked,
+    /// The input-independent preprocessing rounds have been successfully computed.
+    FinishedOffline,
+    /// Private user inputs are materialized and the system is poised for online interaction.
+    ReadyOnline,
+    /// The directed acyclic graph is fully evaluated and protocol output is available.
+    Finished,
 }
 
 type WireMap<S> = HashMap<WireId, <S as MpcScheme>::Wire>;
 
+/// The primary state machine managing the lifecycle and evaluation of a multiparty computation.
+///
+/// Orchestrates the cryptographic scheme context, physical network interface, and evaluation of
+/// the topological circuit graph. It bounds the phases of computation securely.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// # #[cfg(all(feature = "example-additive", feature = "example-secure-network"))]
+/// # #[tokio::main]
+/// # async fn main() {
+/// use mpc_core::mpc::{ExecutionContext, MpcCircuit, WireId};
+/// use mpc_core::example::additive::{AdditiveScheme, AdditiveOperation};
+/// use mpc_core::networking::secure_mesh::{MeshNetwork, NodeIdentity};
+/// use ed25519_dalek::SigningKey;
+///
+/// // 1. Construct the topological circuit and cryptographic scheme
+/// let scheme = AdditiveScheme::<100>;
+/// let ops = vec![
+///     AdditiveOperation::Input { party_id: 0, output: WireId(0) },
+///     AdditiveOperation::Input { party_id: 1, output: WireId(1) },
+///     AdditiveOperation::Add { left: WireId(0), right: WireId(1), output: WireId(2) }
+/// ];
+/// let circuit = MpcCircuit::new(ops, scheme).expect("Valid circuit");
+///
+/// // 2. Establish the secure network transport
+/// let sk = SigningKey::from_bytes(&[0u8; 32]);
+/// let identity = NodeIdentity {
+///     address: "127.0.0.1:8080".parse().unwrap(),
+///     public_key: sk.verifying_key()
+/// };
+/// let mut network = MeshNetwork::from_identities(0, sk, vec![identity.clone(), identity]).await.unwrap();
+///
+/// // 3. Bind the network and circuit into a synchronized execution context
+/// let mut ctx = ExecutionContext::new(circuit, network).unwrap();
+///
+/// // 4. Execute the distributed computation phases sequentially
+/// ctx.handshake().await.unwrap();
+/// ctx.do_offline().await.unwrap();
+///
+/// // 5. Materialize local inputs
+/// ctx.prepare_input(vec![(WireId(0), 42)]).unwrap();
+///
+/// // 6. Evaluate the online dependency graph
+/// ctx.do_online().await.unwrap();
+///
+/// // 7. Retrieve the materialized output logic
+/// let result = ctx.get_wire(WireId(2)).unwrap();
+/// # }
+/// # #[cfg(not(all(feature = "example-additive", feature = "example-secure-network")))]
+/// # fn main() {}
+/// ```
 pub struct ExecutionContext<S, N>
 where
     S: MpcScheme,
@@ -109,6 +199,7 @@ where
     S: MpcScheme,
     N: Network,
 {
+    /// Constructs a newborn execution context mapping a circuit graph to a network configuration.
     pub fn new(
         circuit: crate::mpc::circuit::MpcCircuit<S>,
         network: N,
@@ -122,10 +213,12 @@ where
         })
     }
 
+    /// Exposes an immutable reference to the deterministic state machine pointer.
     pub fn execution_state(&self) -> &ExecutionState {
         &self.execution_state
     }
 
+    /// Cryptographically synchronizes the network nodes and asserts consensus on the directed acyclic graph architecture.
     pub async fn handshake(&mut self) -> Result<(SendLen, RecvLen), ExecutionContextError> {
         assert_state!("handshake", self.execution_state, ExecutionState::NewBorn);
 
@@ -305,6 +398,10 @@ where
         Ok((send_len, recv_len))
     }
 
+    /// Executes the input-independent cryptographic preprocessing sequence.
+    ///
+    /// Iterates through the topologically sorted offline rounds, computing local mathematical
+    /// operations and resolving network dependencies before inputs are materialized.
     pub async fn do_offline(&mut self) -> Result<(SendLen, RecvLen), ExecutionContextError> {
         assert_state!(
             "do_offline",
@@ -338,6 +435,7 @@ where
         Ok((total_send_len, total_recv_len))
     }
 
+    /// Allocates and validates the secret or public combinatorial inputs provided by the user.
     pub fn prepare_input<I>(&mut self, user_inputs: I) -> Result<(), ExecutionContextError>
     where
         I: IntoIterator<Item = (WireId, S::Input)>,
@@ -384,6 +482,7 @@ where
         Ok(())
     }
 
+    /// Evaluates the input-dependent computation sequence and resolves the final outputs.
     pub async fn do_online(&mut self) -> Result<(SendLen, RecvLen), ExecutionContextError> {
         assert_state!(
             "do_online",
@@ -418,10 +517,14 @@ where
         Ok((total_send_len, total_recv_len))
     }
 
+    /// Retrieves an immutable reference to the evaluated wire logic element, if it exists in the
+    /// active wire mapping.
     pub fn get_wire(&self, id: WireId) -> Option<&S::Wire> {
         self.wire_contents.get(&id)
     }
 
+    /// Evaluates a predicate over all computed wires, dumping satisfying wire data for heuristic
+    /// debugging.
     pub fn dump_wires_with_filter<P>(&self, mut predicate: P)
     where
         P: FnMut(&S::Wire) -> bool,

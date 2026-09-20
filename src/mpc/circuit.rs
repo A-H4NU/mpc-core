@@ -79,15 +79,33 @@ pub struct MpcCircuit<S: MpcScheme> {
 /// Errors that can occur during the instantiation and topological sorting of an [`MpcCircuit`].
 #[derive(Debug)]
 pub enum MpcCircuitError {
+    /// Raised when the operational semantics of the provided graph violate structural properties
+    /// defined by the cryptographic scheme.
     CircuitUnsound,
 
-    WireProducedManyTimes { wire: WireId },
+    /// Raised when a specific wire identifier is designated as the target of an output multiple
+    /// times within the computational graph.
+    WireProducedManyTimes {
+        /// The identifier corresponding to the redundantly computed wire.
+        wire: WireId,
+    },
 
-    WireConsumedButNotProduced { wire: WireId },
+    /// Raised when an operation's dependency requests a wire identifier that has not been produced
+    /// by any operation preceding it.
+    WireConsumedButNotProduced {
+        /// The identifier corresponding to the dangling wire reference.
+        wire: WireId,
+    },
 
+    /// Raised when a topological cycle is detected, preventing acyclic ordering of the
+    /// computational nodes.
     CircuitCyclic,
 
+    /// Raised when an attempt is made to evaluate a network matrix void of any operational nodes.
     EmptyCircuit,
+
+    /// Raised when an input collection operation is contradictory classified as a local operation.
+    LocalInputOperation,
 }
 impl std::fmt::Display for MpcCircuitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -101,6 +119,10 @@ impl std::fmt::Display for MpcCircuitError {
             }
             Self::CircuitCyclic => write!(f, "Circuit is cyclic"),
             Self::EmptyCircuit => write!(f, "Circuit is empty"),
+            Self::LocalInputOperation => write!(
+                f,
+                "An input operation was strictly classified as local, violating topology invariants"
+            ),
         }
     }
 }
@@ -109,11 +131,9 @@ impl std::error::Error for MpcCircuitError {}
 impl<S: MpcScheme> MpcCircuit<S> {
     /// Constructs a new multi-party computation circuit.
     ///
-    /// The constructor performs a topological sort on the provided operations to resolve dependencies,
-    /// batching them into sequentially executed rounds. It partitions operations into an offline wave
-    /// and an online wave based on dependency on user inputs.
-    ///
-    /// [PLACEHOLDER for Panics: cryptographic assertion placeholders]
+    /// The constructor performs a topological sort on the provided operations to resolve
+    /// dependencies, batching them into sequentially executed rounds. It partitions operations into
+    /// an offline wave and an online wave based on dependency on user inputs.
     pub fn new<I>(operations: I, scheme: S) -> Result<Self, MpcCircuitError>
     where
         I: IntoIterator<Item = S::Operation>,
@@ -126,6 +146,11 @@ impl<S: MpcScheme> MpcCircuit<S> {
         }
         if !scheme.is_circuit_sound(&raw_ops) {
             return Err(MpcCircuitError::CircuitUnsound);
+        }
+        for op in raw_ops.iter() {
+            if op.is_input() && scheme.is_operation_local(op) {
+                return Err(MpcCircuitError::LocalInputOperation);
+            }
         }
 
         let (mut ops, adj, mut in_degree) = {
@@ -231,12 +256,6 @@ impl<S: MpcScheme> MpcCircuit<S> {
                 && round.local_operations.iter().all(|op| !op.is_input())
         }));
 
-        debug_assert!(
-            online_rounds
-                .iter()
-                .all(|round| { round.local_operations.iter().all(|op| !op.is_input()) })
-        );
-
         Ok(MpcCircuit {
             scheme,
             offline_rounds,
@@ -244,7 +263,8 @@ impl<S: MpcScheme> MpcCircuit<S> {
         })
     }
 
-    /// Returns an iterator over the wire identifiers corresponding to the input operations provided by the specified party.
+    /// Returns an iterator over the wire identifiers corresponding to the input operations provided
+    /// by the specified party.
     pub fn get_input_operation_wire_ids_of_party(
         &self,
         party_id: usize,
@@ -281,6 +301,8 @@ impl<S: MpcScheme> MpcCircuit<S> {
         self.offline_rounds.len()
     }
 
+    /// Computes the depth of the dependent, input-aware evaluation stages in the computational
+    /// tree.
     pub fn num_online_rounds(&self) -> usize {
         self.online_rounds.len()
     }
