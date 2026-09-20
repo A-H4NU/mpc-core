@@ -461,9 +461,7 @@ mod secure_network_tests {
         ];
 
         let mut network_futures = Vec::new();
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..n_parties {
-            let sk = signing_keys[i].clone();
+        for (i, sk) in signing_keys.iter().cloned().enumerate() {
             let idents = node_identities.clone();
             network_futures.push(MeshNetwork::from_identities(i, sk, idents));
         }

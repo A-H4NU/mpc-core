@@ -44,7 +44,6 @@ pub enum ExecutionState {
 
 type WireMap<S> = HashMap<WireId, <S as MpcScheme>::Wire>;
 
-#[allow(dead_code)]
 pub struct ExecutionContext<S, N>
 where
     S: MpcScheme,
@@ -298,13 +297,13 @@ where
         let mut total_recv_len = 0;
         for round in self.circuit.offline_rounds().iter() {
             Self::do_local_operations(
-                &self.circuit.scheme(),
+                self.circuit.scheme(),
                 unsafe { self.scheme_context.assume_init_mut() },
                 &mut self.wire_contents,
                 round,
             )?;
             let (send_len, recv_len) = Self::do_network_operations(
-                &self.circuit.scheme(),
+                self.circuit.scheme(),
                 unsafe { self.scheme_context.assume_init_mut() },
                 &mut self.wire_contents,
                 &mut self.network,
@@ -377,13 +376,13 @@ where
         let mut total_recv_len = 0;
         for round in self.circuit.online_rounds().iter() {
             Self::do_local_operations(
-                &self.circuit.scheme(),
+                self.circuit.scheme(),
                 unsafe { self.scheme_context.assume_init_mut() },
                 &mut self.wire_contents,
                 round,
             )?;
             let (send_len, recv_len) = Self::do_network_operations(
-                &self.circuit.scheme(),
+                self.circuit.scheme(),
                 unsafe { self.scheme_context.assume_init_mut() },
                 &mut self.wire_contents,
                 &mut self.network,
@@ -424,10 +423,9 @@ where
 mod tests {
     use super::*;
     use crate::mpc::{MpcCircuit, NetworkPhaseOutput, Operation, scheme::MpcScheme};
-    use crate::networking::{Network, ReceiveRequest, RecvLen, SendLen, SendRequest};
+    use crate::networking::{Network, RecvLen, SendLen, SendRequest};
     use serde::{Deserialize, Serialize};
     use std::convert::Infallible;
-    use std::future::Future;
     use std::io;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -519,6 +517,7 @@ mod tests {
         n: usize,
         id: usize,
     }
+
     impl Network for MockNetwork {
         fn n_players(&self) -> usize {
             self.n
@@ -526,34 +525,27 @@ mod tests {
         fn my_id(&self) -> usize {
             self.id
         }
-        fn send_objects_many<'a, T, I>(
-            &mut self,
-            _req: I,
-        ) -> impl Future<Output = io::Result<SendLen>>
+        async fn send_objects_many<'a, T, I>(&mut self, _req: I) -> io::Result<SendLen>
         where
             T: Serialize + Clone + 'a,
             I: IntoIterator<Item = &'a SendRequest<'a, T>>,
         {
-            async move { Ok(0) }
+            Ok(0)
         }
-        fn send(&mut self, _to: usize, _data: &[u8]) -> impl Future<Output = io::Result<SendLen>> {
-            async move { Ok(0) }
+        async fn send(&mut self, _to: usize, _data: &[u8]) -> io::Result<SendLen> {
+            Ok(0)
         }
-        fn broadcast(&mut self, _data: &[u8]) -> impl Future<Output = io::Result<SendLen>> {
-            async move { Ok(0) }
+        async fn broadcast(&mut self, _data: &[u8]) -> io::Result<SendLen> {
+            Ok(0)
         }
-        fn recv(&mut self, _from: usize) -> impl Future<Output = io::Result<(Vec<u8>, RecvLen)>> {
-            async move { Ok((vec![], 0)) }
+        async fn recv(&mut self, _from: usize) -> io::Result<(Vec<u8>, RecvLen)> {
+            Ok((vec![], 0))
         }
-        fn recv_objects_many<'a, T, I>(
+        async fn recv_objects_many<'a, T, I>(
             &mut self,
             _req: I,
-        ) -> impl Future<Output = io::Result<(Vec<Vec<T>>, RecvLen)>>
-        where
-            T: for<'de> Deserialize<'de> + 'a,
-            I: IntoIterator<Item = &'a ReceiveRequest<T>>,
-        {
-            async move { Ok((vec![], 0)) }
+        ) -> io::Result<(Vec<Vec<T>>, RecvLen)> {
+            Ok((vec![], 0))
         }
     }
 
