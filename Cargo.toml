@@ -1,6 +1,6 @@
 [package]
 name = "mpc-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 repository = "https://github.com/A-H4NU/mpc-core"
 description = "A flexible, trait-based core framework and asynchronous execution engine for Multi-Party Computation (MPC) protocols."
