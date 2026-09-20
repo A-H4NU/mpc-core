@@ -5,7 +5,6 @@ use std::{
 
 use crate::mpc::{Operation, scheme::MpcScheme};
 use serde::{Deserialize, Serialize};
-use snafu::{Snafu, ensure};
 
 /// An identifier for a wire within a directed acyclic graph representing a multi-party computation circuit.
 ///
@@ -78,19 +77,34 @@ pub struct MpcCircuit<S: MpcScheme> {
 }
 
 /// Errors that can occur during the instantiation and topological sorting of an [`MpcCircuit`].
-#[derive(Debug, Snafu)]
+#[derive(Debug)]
 pub enum MpcCircuitError {
-    #[snafu(display("The provided circuit is not sound"))]
     CircuitUnsound,
-    #[snafu(display("Wire {wire} produced multiple times"))]
+
     WireProducedManyTimes { wire: WireId },
-    #[snafu(display("Wire {wire} is consumed but it is never produced"))]
+
     WireConsumedButNotProduced { wire: WireId },
-    #[snafu(display("Circuit is cyclic"))]
+
     CircuitCyclic,
-    #[snafu(display("Circuit is empty"))]
+
     EmptyCircuit,
 }
+impl std::fmt::Display for MpcCircuitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CircuitUnsound => write!(f, "The provided circuit is not sound"),
+            Self::WireProducedManyTimes { wire } => {
+                write!(f, "Wire {} produced multiple times", wire)
+            }
+            Self::WireConsumedButNotProduced { wire } => {
+                write!(f, "Wire {} is consumed but it is never produced", wire)
+            }
+            Self::CircuitCyclic => write!(f, "Circuit is cyclic"),
+            Self::EmptyCircuit => write!(f, "Circuit is empty"),
+        }
+    }
+}
+impl std::error::Error for MpcCircuitError {}
 
 impl<S: MpcScheme> MpcCircuit<S> {
     /// Constructs a new multi-party computation circuit.
@@ -107,8 +121,12 @@ impl<S: MpcScheme> MpcCircuit<S> {
         let raw_ops = operations.into_iter().collect::<Vec<_>>();
         let num_ops = raw_ops.len();
 
-        ensure!(num_ops > 0, EmptyCircuitSnafu);
-        ensure!(scheme.is_circuit_sound(&raw_ops), CircuitUnsoundSnafu);
+        if num_ops == 0 {
+            return Err(MpcCircuitError::EmptyCircuit);
+        }
+        if !scheme.is_circuit_sound(&raw_ops) {
+            return Err(MpcCircuitError::CircuitUnsound);
+        }
 
         let (mut ops, adj, mut in_degree) = {
             let mut adj: Vec<Vec<usize>> = vec![vec![]; num_ops];

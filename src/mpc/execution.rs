@@ -1,24 +1,43 @@
+impl std::fmt::Display for ExecutionContextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidConfiguration { msg } => write!(f, "Invalid configuration: {}", msg),
+            Self::StateError { state, op } => write!(
+                f,
+                "Execution state error: {} not allowed in state {:?}",
+                op, state
+            ),
+            Self::NetworkError { source } => write!(f, "Network error: {}", source),
+            Self::PlanNotAgreed => write!(f, "Plan not agreed between parties"),
+            Self::DuplicateInput { wire } => write!(f, "Duplicate input for wire {}", wire),
+            Self::InvalidInputWire { wire } => {
+                write!(f, "Wire {} is not an output of an input operation", wire)
+            }
+            Self::NotEnoughInputs => write!(f, "Not enough inputs provided"),
+            Self::SchemeError { phase, msg } => write!(f, "Scheme error during {}: {}", phase, msg),
+        }
+    }
+}
+impl std::error::Error for ExecutionContextError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NetworkError { source } => Some(source),
+            _ => None,
+        }
+    }
+}
 use itertools::Itertools;
 use sha3::{Digest, Sha3_512, digest::generic_array::GenericArray};
-use snafu::{self, Snafu};
 
-#[derive(Debug, Snafu)]
+#[derive(Debug)]
 pub enum ExecutionContextError {
-    #[snafu(display("Invalid configuration: {msg}"))]
     InvalidConfiguration { msg: String },
-    #[snafu(display("Execution state error: {op} not allowed in state {state:?}"))]
     StateError { op: String, state: ExecutionState },
-    #[snafu(display("Network error: {source}"))]
     NetworkError { source: std::io::Error },
-    #[snafu(display("Plan not agreed between parties"))]
     PlanNotAgreed,
-    #[snafu(display("Duplicate input for wire {wire}"))]
     DuplicateInput { wire: WireId },
-    #[snafu(display("Wire {wire} is not an output of an input operation"))]
     InvalidInputWire { wire: WireId },
-    #[snafu(display("Not enough inputs provided"))]
     NotEnoughInputs,
-    #[snafu(display("Scheme error during {phase}: {msg}"))]
     SchemeError { phase: String, msg: String },
 }
 

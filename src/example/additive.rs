@@ -503,7 +503,7 @@ mod secure_network_tests {
                     "Party {} failed to compute correct sum",
                     i
                 );
-                Ok::<(), snafu::Whatever>(())
+                Ok::<(), Box<dyn std::error::Error>>(())
             };
             exec_futures.push(exec_future);
         }
