@@ -7,6 +7,9 @@ use crate::mpc::{Operation, scheme::MpcScheme};
 use serde::{Deserialize, Serialize};
 use snafu::{Snafu, ensure};
 
+/// An identifier for a wire within a directed acyclic graph representing a multi-party computation circuit.
+///
+/// Every wire uniquely connects the output of one cryptographic operation to the input of another.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct WireId(pub usize);
@@ -17,6 +20,11 @@ impl fmt::Display for WireId {
     }
 }
 
+/// A discrete synchronization step in the multi-party computation protocol.
+///
+/// Operations within a single round are topologically independent and can be executed concurrently.
+/// A round is strictly partitioned into local computation operations (requiring no network interaction)
+/// and network operations (requiring interaction across the cluster).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Round<S: MpcScheme> {
     local_operations: Vec<S::Operation>,
@@ -24,15 +32,43 @@ pub struct Round<S: MpcScheme> {
 }
 
 impl<S: MpcScheme> Round<S> {
+    /// Returns a slice of the local operations scheduled for this round.
     pub fn local_operations(&self) -> &[S::Operation] {
         &self.local_operations
     }
 
+    /// Returns a slice of the network-dependent operations scheduled for this round.
     pub fn network_operations(&self) -> &[S::Operation] {
         &self.network_operations
     }
 }
 
+/// A structured execution plan for a cryptographic multi-party computation protocol.
+///
+/// The circuit encapsulates the specific sequence of operations required to securely compute
+/// a function. It partitions a logical directed acyclic graph of operations into discrete
+/// sequential rounds. The execution is bifurcated into an offline phase (input-independent)
+/// and an online phase (input-dependent) to optimize communication overhead.
+///
+/// # Examples
+///
+/// ```
+/// use mpc_core::mpc::MpcCircuit;
+/// use mpc_core::mpc::WireId;
+/// # #[cfg(feature = "example-additive")]
+/// # {
+/// use mpc_core::example::additive::{AdditiveScheme, AdditiveOperation};
+///
+/// let ops = vec![
+///     AdditiveOperation::Input { party_id: 0, output: WireId(0) },
+///     AdditiveOperation::Input { party_id: 1, output: WireId(1) },
+///     AdditiveOperation::Add { left: WireId(0), right: WireId(1), output: WireId(2) },
+/// ];
+/// let scheme = AdditiveScheme::<100>;
+/// let circuit = MpcCircuit::new(ops, scheme).unwrap();
+/// assert_eq!(circuit.num_total_rounds(), 3);
+/// # }
+/// ```
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound = "S: MpcScheme")]
 pub struct MpcCircuit<S: MpcScheme> {
@@ -41,6 +77,7 @@ pub struct MpcCircuit<S: MpcScheme> {
     online_rounds: Vec<Round<S>>,
 }
 
+/// Errors that can occur during the instantiation and topological sorting of an [`MpcCircuit`].
 #[derive(Debug, Snafu)]
 pub enum MpcCircuitError {
     #[snafu(display("The provided circuit is not sound"))]
@@ -56,6 +93,13 @@ pub enum MpcCircuitError {
 }
 
 impl<S: MpcScheme> MpcCircuit<S> {
+    /// Constructs a new multi-party computation circuit.
+    ///
+    /// The constructor performs a topological sort on the provided operations to resolve dependencies,
+    /// batching them into sequentially executed rounds. It partitions operations into an offline wave
+    /// and an online wave based on dependency on user inputs.
+    ///
+    /// [PLACEHOLDER for Panics: cryptographic assertion placeholders]
     pub fn new<I>(operations: I, scheme: S) -> Result<Self, MpcCircuitError>
     where
         I: IntoIterator<Item = S::Operation>,
@@ -182,6 +226,7 @@ impl<S: MpcScheme> MpcCircuit<S> {
         })
     }
 
+    /// Returns an iterator over the wire identifiers corresponding to the input operations provided by the specified party.
     pub fn get_input_operation_wire_ids_of_party(
         &self,
         party_id: usize,
@@ -193,22 +238,27 @@ impl<S: MpcScheme> MpcCircuit<S> {
             .map(|op| op.outputs().next().expect("Expected one output"))
     }
 
+    /// Returns a reference to the underlying cryptographic scheme.
     pub fn scheme(&self) -> &S {
         &self.scheme
     }
 
+    /// Returns a slice of the online rounds scheduled for this circuit.
     pub fn online_rounds(&self) -> &[Round<S>] {
         &self.online_rounds
     }
 
+    /// Returns a slice of the offline rounds scheduled for this circuit.
     pub fn offline_rounds(&self) -> &[Round<S>] {
         &self.offline_rounds
     }
 
+    /// Returns the total number of rounds in both the offline and online phases.
     pub fn num_total_rounds(&self) -> usize {
         self.offline_rounds.len() + self.online_rounds.len()
     }
 
+    /// Returns the number of rounds dedicated to the offline phase.
     pub fn num_offline_rounds(&self) -> usize {
         self.offline_rounds.len()
     }

@@ -43,3 +43,6 @@ example-secure-network = [
     "dep:anyhow",
     "dep:futures",
 ]
+
+[dev-dependencies]
+tokio = { version = "1.43.0", features = ["macros", "rt-multi-thread"] }
