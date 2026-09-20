@@ -11,12 +11,24 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose --all-features
-    - name: Run tests
-      run: cargo test --verbose --all-features
+
+    - name: Check Formatting
+      run: cargo fmt --all -- --check
+
+    - name: Install cargo-hack
+      uses: taiki-e/install-action@cargo-hack
+
+    - name: Check feature powerset
+      run: cargo hack check --feature-powerset --no-dev-deps
+
+    - name: Clippy feature powerset
+      run: cargo hack clippy --feature-powerset -- -D warnings
+
+    - name: Test feature powerset
+      run: cargo hack test --feature-powerset
+
+    - name: Run doctests
+      run: cargo test --doc --verbose --all-features
